@@ -3,6 +3,7 @@ import type { Server } from "http";
 import { storage } from "./storage";
 import { setupBot } from "./bot";
 import { api } from "@shared/routes";
+import { seedDatabase } from "./seed";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -10,6 +11,9 @@ export async function registerRoutes(
 ): Promise<Server> {
   // Start the bot
   setupBot();
+  
+  // Seed DB if empty
+  seedDatabase();
 
   // API Routes
   app.get(api.stats.get.path, async (req, res) => {
