@@ -184,13 +184,12 @@ https://www.tiktok.com/@willsmith/video/7078969024029322538`);
       if (isAudio) {
         await ctx.replyWithAudio(new File(result.filepath), {
           caption: `🎵 ${result.title || "Track"}\n📦 ${fileSizeMB.toFixed(1)}MB\n🔗 ${url}`,
-          // reply_to_message_id: ctx.message.message_id,
+          reply_to_message_id: ctx.message.message_id,
         });
       } else {
-        await ctx.replyWithDocument(new File(result.filepath), {
+        await ctx.replyWithVideo(new File(result.filepath), {
           caption: `🎬 ${result.title || "Video"}\n📦 ${fileSizeMB.toFixed(1)}MB\n🔗 ${url}`,
-
-          // reply_to_message_id: ctx.message.message_id,
+          reply_to_message_id: ctx.message.message_id,
         });
       }
 
