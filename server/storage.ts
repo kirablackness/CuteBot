@@ -1,38 +1,40 @@
-import { type User, type InsertUser } from "@shared/schema";
-import { randomUUID } from "crypto";
-
-// modify the interface with any CRUD methods
-// you might need
+import { db } from "./db";
+import { downloads, type InsertDownload, type Download } from "@shared/schema";
+import { eq, desc, sql } from "drizzle-orm";
 
 export interface IStorage {
-  getUser(id: string): Promise<User | undefined>;
-  getUserByUsername(username: string): Promise<User | undefined>;
-  createUser(user: InsertUser): Promise<User>;
+  createDownload(download: InsertDownload): Promise<Download>;
+  getDownloads(limit?: number): Promise<Download[]>;
+  getStats(): Promise<{
+    total: number;
+    byPlatform: { platform: string; count: number }[];
+  }>;
 }
 
-export class MemStorage implements IStorage {
-  private users: Map<string, User>;
-
-  constructor() {
-    this.users = new Map();
+export class DatabaseStorage implements IStorage {
+  async createDownload(download: InsertDownload): Promise<Download> {
+    const [newDownload] = await db.insert(downloads).values(download).returning();
+    return newDownload;
   }
 
-  async getUser(id: string): Promise<User | undefined> {
-    return this.users.get(id);
+  async getDownloads(limit = 10): Promise<Download[]> {
+    return await db.select().from(downloads).orderBy(desc(downloads.createdAt)).limit(limit);
   }
 
-  async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.username === username,
-    );
-  }
+  async getStats() {
+    const totalResult = await db.select({ count: sql<number>`count(*)` }).from(downloads);
+    const total = Number(totalResult[0]?.count || 0);
 
-  async createUser(insertUser: InsertUser): Promise<User> {
-    const id = randomUUID();
-    const user: User = { ...insertUser, id };
-    this.users.set(id, user);
-    return user;
+    const byPlatform = await db
+      .select({
+        platform: downloads.platform,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(downloads)
+      .groupBy(downloads.platform);
+
+    return { total, byPlatform };
   }
 }
 
-export const storage = new MemStorage();
+export const storage = new DatabaseStorage();
