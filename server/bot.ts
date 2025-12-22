@@ -249,7 +249,11 @@ async function downloadMedia(url: string, platform: string) {
     let command;
 
     if (platform === "yandexmusic") {
-      command = `yt-dlp --extract-audio --audio-format mp3 --audio-quality 320K -o "${filepath}" "${url}"`;
+      const cookieFile = path.join(process.cwd(), "cookies.txt");
+      const cookieParam = fs.existsSync(cookieFile)
+        ? `--cookies "${cookieFile}"`
+        : "";
+      command = `yt-dlp ${cookieParam} --extract-audio --audio-format mp3 --audio-quality 320K -o "${filepath}" "${url}"`;
     } else if (platform === "youtube") {
       command = `yt-dlp -f "best[height<=1080]" -o "${filepath}" "${url}"`;
     } else {
