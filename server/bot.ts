@@ -12,13 +12,178 @@ const execAsync = promisify(exec);
 const TEMP_DIR = os.tmpdir();
 const COOLDOWN_SECONDS = 30;
 const userCooldown = new Map();
-let isDownloading = false;
 
 const BOT_USERNAME = (process.env.BOT_USERNAME || "lashmedia_pro_bot")
   .replace(/^@/, "")
   .toLowerCase();
 
-const GROUP_SEARCH_PREFIX = "!"; // например: "!олег газманов парами"
+const GROUP_SEARCH_PREFIX = "!";
+
+// ============ QUEUE SYSTEM ============
+interface DownloadTask {
+  ctx: any;
+  input: string;
+  platform: string;
+  resolve: () => void;
+  reject: (error: Error) => void;
+}
+
+async function handleDownloadTask(ctx: any, input: string, platform: string) {
+  let statusMsg: any;
+  const chatId = ctx.chat.id;
+
+  try {
+    statusMsg = await ctx
+      .reply(
+        platform === "search"
+          ? "🔍 Searching..."
+          : `🔍 Detecting ${platform}...`,
+        { reply_to_message_id: ctx.message?.message_id },
+      )
+      .catch(() => null);
+  } catch {
+    statusMsg = await ctx
+      .reply(
+        platform === "search"
+          ? "🔍 Searching..."
+          : `🔍 Detecting ${platform}...`,
+      )
+      .catch(() => null);
+  }
+
+  const updateStatus = async (text: string) => {
+    if (!statusMsg) return;
+    try {
+      await ctx.telegram.editMessageText(
+        chatId,
+        statusMsg.message_id,
+        undefined,
+        text,
+      );
+    } catch (e) {
+      console.error("Failed to update status:", e);
+    }
+  };
+
+  try {
+    await updateStatus("⏬ Downloading...");
+
+    const result = await downloadMedia(input, platform);
+    if (!result.success || !result.filepath) {
+      throw new Error(result.error || "Failed to download media");
+    }
+
+    const stats = fs.statSync(result.filepath);
+    const fileSizeMB = stats.size / (1024 * 1024);
+
+    await updateStatus(`🚀 Отправка ${fileSizeMB.toFixed(1)}MB...`);
+
+    try {
+      await storage.createDownload({
+        platform: platform === "search" ? "youtube" : platform,
+        url: input,
+        fileSizeMb: fileSizeMB.toFixed(1),
+        status: "completed",
+      });
+    } catch (e) {
+      console.error("Database error:", e);
+    }
+
+    const isAudio =
+      platform === "yandexmusic" ||
+      platform === "search" ||
+      result.filepath.endsWith(".mp3");
+    const link = input.startsWith("http") ? input : "";
+    const safeHref = escapeHtmlAttr(link);
+    const safeTitle = escapeHtml(result.title);
+    const caption = `${isAudio ? "🎵" : "🎬"} ${safeTitle}\n📦 ${fileSizeMB.toFixed(1)}MB\n🔗 <a href="${safeHref}">${input.startsWith("http") ? "Открыть" : "From Search"}</a>`;
+
+    if (isAudio) {
+      let tgTitle = (result.title || "Audio").trim();
+      tgTitle = tgTitle.replace(/^\s*[^-–—]{2,50}\s*[-–—]\s*/u, "");
+      const safeName = sanitizeFilename(tgTitle);
+
+      await ctx.replyWithAudio(
+        {
+          source: fs.createReadStream(result.filepath),
+          filename: `${safeName}.mp3`,
+        },
+        {
+          title: tgTitle,
+          caption,
+          parse_mode: "HTML",
+        },
+      );
+    } else {
+      await ctx.replyWithVideo(Input.fromLocalFile(result.filepath), {
+        caption,
+        parse_mode: "HTML",
+      });
+    }
+
+    if (statusMsg) {
+      await ctx.telegram
+        .deleteMessage(chatId, statusMsg.message_id)
+        .catch(console.error);
+    }
+    fs.unlinkSync(result.filepath);
+  } catch (error: any) {
+    console.error("Download error:", error);
+    await updateStatus(`❌ Error: ${error.message}`);
+    try {
+      await storage.createDownload({
+        platform,
+        url: input,
+        status: "failed",
+      });
+    } catch (e) {
+      console.error("Database error:", e);
+    }
+    throw error;
+  }
+}
+
+const downloadQueue: DownloadTask[] = [];
+let isProcessingQueue = false;
+
+async function processQueue() {
+  if (isProcessingQueue || downloadQueue.length === 0) return;
+
+  isProcessingQueue = true;
+  const task = downloadQueue[0];
+
+  try {
+    await handleDownloadTask(task.ctx, task.input, task.platform);
+    downloadQueue.shift();
+    task.resolve();
+  } catch (error) {
+    downloadQueue.shift();
+    console.error("Queue processing error:", error);
+    task.reject(error as Error);
+  } finally {
+    isProcessingQueue = false;
+    if (downloadQueue.length > 0) {
+      setImmediate(processQueue);
+    }
+  }
+}
+
+function addToQueue(ctx: any, input: string, platform: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const position = downloadQueue.length;
+    downloadQueue.push({ ctx, input, platform, resolve, reject });
+
+    if (position === 0) {
+      processQueue();
+    } else {
+      ctx
+        .reply(
+          `📥 Добавлено в очередь. Номер: ${position}. Пожалуйста, ожидайте...`,
+        )
+        .catch(console.error);
+    }
+  });
+}
 
 function extractMentionQuery(text: string) {
   if (!BOT_USERNAME) return null;
@@ -26,7 +191,6 @@ function extractMentionQuery(text: string) {
   if (!re.test(text)) return null;
 
   const q = text.replace(re, "").replace(/\s+/g, " ").trim();
-
   return q || null;
 }
 
@@ -54,8 +218,8 @@ export function setupBot() {
 📸 Instagram (reels, posts)
 
 ⚡ Automatic detection:
-• Just send a link!
-• Or type a song name to search on YouTube.
+- Just send a link!
+- Or type a song name to search on YouTube.
 
 ⏱ Limit: 1 request every ${COOLDOWN_SECONDS} seconds
 
@@ -69,9 +233,9 @@ Commands:
   bot.command("help", (ctx) => {
     ctx.reply(`📖 How to use:
 
-1. Send link from:
-   • Yandex.Music, YouTube, TikTok, Instagram
-   
+1. Отправьте ссылку:
+   - Yandex.Music, YouTube, TikTok, Instagram
+
 2. Or just type the song name (e.g. "Imagine Dragons Believer")
 
 👥 Group Chat:
@@ -91,7 +255,7 @@ If a link doesn't work, try searching by name instead.`);
     try {
       const { stdout } = await execAsync("yt-dlp --version");
       ctx.reply(
-        `✅ Bot working\n📦 yt-dlp: ${stdout.trim()}\n👥 Active users: ${userCooldown.size}`,
+        `✅ Bot working\n📦 yt-dlp: ${stdout.trim()}\n👥 Active users: ${userCooldown.size}\n📊 Queue: ${downloadQueue.length} pending downloads`,
       );
     } catch (err) {
       ctx.reply("⚠️ yt-dlp not installed");
@@ -101,15 +265,13 @@ If a link doesn't work, try searching by name instead.`);
   // ============ MAIN HANDLER ============
   bot.on("text", async (ctx) => {
     const raw = ctx.message.text;
-    if (!raw) return;
-    if (raw.startsWith("/")) return;
+    if (!raw || raw.startsWith("/")) return;
 
     const chatType = ctx.chat.type;
     const isGroup = chatType === "group" || chatType === "supergroup";
-
     const text = raw.trim();
 
-    // 1) Ссылки — всегда без тега (как у тебя уже работает)
+    // 1) Handle URLs
     const urlRegex = /(https?:\/\/[^\s]+)/g;
     const urls = text.match(urlRegex);
 
@@ -122,171 +284,45 @@ If a link doesn't work, try searching by name instead.`);
       return;
     }
 
-    // 2) Личка — любой текст = поиск
+    // 2) Private chat - any text is a search
     if (!isGroup) {
       return handleDownload(ctx, text, "search");
     }
 
-    // 3) Группа — поиск удобными триггерами
-
-    // 3.1) если тегнули бота где угодно
+    // 3) Group chat - handle special triggers
     const mentionQuery = extractMentionQuery(text);
     if (mentionQuery) {
       return handleDownload(ctx, mentionQuery, "search");
     }
 
-    // 3.2) если сообщение начинается с "!"
     if (text.startsWith(GROUP_SEARCH_PREFIX)) {
       const q = text.slice(GROUP_SEARCH_PREFIX.length).trim();
       if (q) return handleDownload(ctx, q, "search");
       return;
     }
 
-    // 3.3) если ответили на бота
     if (isReplyToBot(ctx)) {
       return handleDownload(ctx, text, "search");
     }
-
-    // иначе — молчим (чтобы не спамить на любой текст)
   });
 
   async function handleDownload(ctx: any, input: string, platform: string) {
     const userId = ctx.from.id;
-    const chatId = ctx.chat.id;
     const now = Math.floor(Date.now() / 1000);
     const lastRequest = userCooldown.get(userId);
 
-    if (lastRequest && now - lastRequest < COOLDOWN_SECONDS) {
-      if (ctx.chat.type === "private") {
-        await ctx.reply(`⏳ Wait ${COOLDOWN_SECONDS - (now - lastRequest)}s`);
-      }
-      return;
-    }
-
-    if (isDownloading) {
-      if (ctx.chat.type === "private") {
-        await ctx.reply("📥 Already downloading. Please wait...");
-      }
-      return;
-    }
+    // if (lastRequest && now - lastRequest < COOLDOWN_SECONDS) {
+    //   await ctx.reply(`⏳ Wait ${COOLDOWN_SECONDS - (now - lastRequest)}s`);
+    //   return;
+    // }
 
     userCooldown.set(userId, now);
-    isDownloading = true;
 
-    let statusMsg: any;
-    try {
-      statusMsg = await ctx.reply(
-        platform === "search" ? "🔍 Searching..." : `🔍 Detecting ${platform}...`,
-        {
-          reply_to_message_id: ctx.message.message_id,
-        },
-      );
-    } catch {
-      // Fallback: reply without reply_to_message_id if it fails (in groups)
-      statusMsg = await ctx.reply(
-        platform === "search" ? "🔍 Searching..." : `🔍 Detecting ${platform}...`,
-      );
-    }
-
-    try {
-      await ctx.telegram.editMessageText(
-        chatId,
-        statusMsg.message_id,
-        undefined,
-        "⏬ Downloading...",
-      );
-
-      const result = await downloadMedia(input, platform);
-      if (!result.success || !result.filepath)
-        throw new Error(result.error || "Failed");
-
-      const stats = fs.statSync(result.filepath);
-      const fileSizeMB = stats.size / (1024 * 1024);
-
-      await ctx.telegram.editMessageText(
-        chatId,
-        statusMsg.message_id,
-        undefined,
-        `🚀 Sending ${fileSizeMB.toFixed(1)}MB...`,
-      );
-
-      // Log to DB
-      try {
-        await storage.createDownload({
-          platform: platform === "search" ? "youtube" : platform,
-          url: input,
-          fileSizeMb: fileSizeMB.toFixed(1),
-          status: "completed",
-        });
-      } catch (e) {
-        console.error(e);
-      }
-
-      const isAudio =
-        platform === "yandexmusic" ||
-        platform === "search" ||
-        result.filepath.endsWith(".mp3");
-
-      const link = input.startsWith("http") ? input : "";
-      const safeHref = escapeHtmlAttr(link);
-      const safeTitle = escapeHtml(result.title);
-
-      // const caption = isAudio
-      // ? `🎵 ${safeTitle}\n📦 ${fileSizeMB.toFixed(1)}MB\n🔗 <a href="${safeHref}">Открыть</a>`
-      // : `🎬 ${safeTitle}\n📦 ${fileSizeMB.toFixed(1)}MB\n🔗 <a href="${safeHref}">Открыть</a>`;
-
-      const caption = `${isAudio ? "🎵" : "🎬"} ${safeTitle}\n📦 ${fileSizeMB.toFixed(1)}MB\n🔗 <a href="${safeHref}">${input.startsWith("http") ? "Открыть" : "From Search"}</a>`;
-
-      if (isAudio) {
-        // await ctx.replyWithAudio(Input.fromLocalFile(result.filepath), {
-        //   caption,
-        //   parse_mode: "HTML",
-        // });
-
-        let tgTitle = (result.title || "Audio").trim();
-        tgTitle = tgTitle.replace(/^\s*[^-–—]{2,50}\s*[-–—]\s*/u, ""); // срежет "Артист - "
-        const safeName = sanitizeFilename(tgTitle);
-
-        await ctx.replyWithAudio(
-          {
-            source: fs.createReadStream(result.filepath),
-            filename: `${safeName}.mp3`,
-          },
-          {
-            title: tgTitle,
-            caption,
-            parse_mode: "HTML",
-          },
-        );
-      } else {
-        await ctx.replyWithVideo(Input.fromLocalFile(result.filepath), {
-          caption,
-          parse_mode: "HTML",
-        });
-      }
-
-      await ctx.telegram.deleteMessage(chatId, statusMsg.message_id);
-      fs.unlinkSync(result.filepath);
-    } catch (error: any) {
-      console.error("Error:", error);
-      await ctx.telegram.editMessageText(
-        chatId,
-        statusMsg.message_id,
-        undefined,
-        `❌ Error: ${error.message}`,
-      );
-      try {
-        await storage.createDownload({
-          platform,
-          url: input,
-          status: "failed",
-        });
-      } catch (e) {
-        console.error(e);
-      }
-    } finally {
-      isDownloading = false;
-    }
+    // Don't await the queue addition
+    addToQueue(ctx, input, platform).catch((error) => {
+      console.error("Error in queue processing:", error);
+      ctx.reply("❌ An error occurred while processing your request");
+    });
   }
 
   bot
@@ -299,8 +335,7 @@ If a link doesn't work, try searching by name instead.`);
 }
 
 function detectPlatform(url: string): string | null {
-  if (url.includes("music.yandex.ru") || url.includes("music.yandex.com"))
-    return "yandexmusic";
+  if (url.includes("music.yandex.")) return "yandexmusic";
   if (url.includes("youtube.com") || url.includes("youtu.be")) return "youtube";
   if (url.includes("tiktok.com")) return "tiktok";
   if (url.includes("instagram.com")) return "instagram";
@@ -355,19 +390,13 @@ function sanitizeFilename(name: string, maxLen = 80) {
 }
 
 function escapeHtml(text: string) {
+  if (!text) return "";
   return text
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function escapeHtmlAttr(text: string) {
-  return escapeHtml(text).replaceAll('"', "&quot;");
-}
-
-function isReplyToBot(ctx: any): boolean {
-  if (!ctx.message?.reply_to_message) return false;
-  const repliedTo = ctx.message.reply_to_message;
-  // Check if the replied message is from the bot
-  return repliedTo.from?.is_bot === true;
+  return escapeHtml(text).replace(/"/g, "&quot;");
 }
