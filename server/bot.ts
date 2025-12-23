@@ -14,6 +14,27 @@ const COOLDOWN_SECONDS = 30;
 const userCooldown = new Map();
 let isDownloading = false;
 
+const BOT_USERNAME = (process.env.BOT_USERNAME || "lashmedia_pro_bot")
+  .replace(/^@/, "")
+  .toLowerCase();
+
+const GROUP_SEARCH_PREFIX = "!"; // например: "!олег газманов парами"
+
+function extractMentionQuery(text: string) {
+  if (!BOT_USERNAME) return null;
+  const re = new RegExp(`@${BOT_USERNAME}\\b`, "ig");
+  if (!re.test(text)) return null;
+
+  const q = text.replace(re, "").replace(/\s+/g, " ").trim();
+
+  return q || null;
+}
+
+function isReplyToBot(ctx: any) {
+  const u = ctx?.message?.reply_to_message?.from?.username;
+  return typeof u === "string" && u.toLowerCase() === BOT_USERNAME;
+}
+
 export function setupBot() {
   if (!process.env.BOT_TOKEN) {
     console.log("Skipping bot setup: BOT_TOKEN not found");
@@ -79,24 +100,54 @@ If a link doesn't work, try searching by name instead.`);
 
   // ============ MAIN HANDLER ============
   bot.on("text", async (ctx) => {
-    if (ctx.message.text.startsWith("/")) return;
+    const raw = ctx.message.text;
+    if (!raw) return;
+    if (raw.startsWith("/")) return;
 
-    const text = ctx.message.text;
+    const chatType = ctx.chat.type;
+    const isGroup = chatType === "group" || chatType === "supergroup";
+
+    const text = raw.trim();
+
+    // 1) Ссылки — всегда без тега (как у тебя уже работает)
     const urlRegex = /(https?:\/\/[^\s]+)/g;
     const urls = text.match(urlRegex);
 
     if (urls) {
       const url = urls[0];
       const platform = detectPlatform(url);
-      if (platform) {
-        return handleDownload(ctx, url, platform);
-      } else if (ctx.chat.type === "private") {
+      if (platform) return handleDownload(ctx, url, platform);
+      if (ctx.chat.type === "private")
         await ctx.reply("❌ Unsupported platform");
-      }
-    } else if (ctx.chat.type === "private") {
-      // Treat text as search query in private chat
+      return;
+    }
+
+    // 2) Личка — любой текст = поиск
+    if (!isGroup) {
       return handleDownload(ctx, text, "search");
     }
+
+    // 3) Группа — поиск удобными триггерами
+
+    // 3.1) если тегнули бота где угодно
+    const mentionQuery = extractMentionQuery(text);
+    if (mentionQuery) {
+      return handleDownload(ctx, mentionQuery, "search");
+    }
+
+    // 3.2) если сообщение начинается с "!"
+    if (text.startsWith(GROUP_SEARCH_PREFIX)) {
+      const q = text.slice(GROUP_SEARCH_PREFIX.length).trim();
+      if (q) return handleDownload(ctx, q, "search");
+      return;
+    }
+
+    // 3.3) если ответили на бота
+    if (isReplyToBot(ctx)) {
+      return handleDownload(ctx, text, "search");
+    }
+
+    // иначе — молчим (чтобы не спамить на любой текст)
   });
 
   async function handleDownload(ctx: any, input: string, platform: string) {
@@ -121,21 +172,35 @@ If a link doesn't work, try searching by name instead.`);
 
     userCooldown.set(userId, now);
     isDownloading = true;
-    
-    const statusMsg = await ctx.reply(platform === "search" ? "🔍 Searching..." : `🔍 Detecting ${platform}...`, {
-      reply_to_message_id: ctx.message.message_id
-    });
+
+    const statusMsg = await ctx.reply(
+      platform === "search" ? "🔍 Searching..." : `🔍 Detecting ${platform}...`,
+      {
+        reply_to_message_id: ctx.message.message_id,
+      },
+    );
 
     try {
-      await ctx.telegram.editMessageText(chatId, statusMsg.message_id, undefined, "⏬ Downloading...");
-      
+      await ctx.telegram.editMessageText(
+        chatId,
+        statusMsg.message_id,
+        undefined,
+        "⏬ Downloading...",
+      );
+
       const result = await downloadMedia(input, platform);
-      if (!result.success || !result.filepath) throw new Error(result.error || "Failed");
+      if (!result.success || !result.filepath)
+        throw new Error(result.error || "Failed");
 
       const stats = fs.statSync(result.filepath);
       const fileSizeMB = stats.size / (1024 * 1024);
 
-      await ctx.telegram.editMessageText(chatId, statusMsg.message_id, undefined, `🚀 Sending ${fileSizeMB.toFixed(1)}MB...`);
+      await ctx.telegram.editMessageText(
+        chatId,
+        statusMsg.message_id,
+        undefined,
+        `🚀 Sending ${fileSizeMB.toFixed(1)}MB...`,
+      );
 
       // Log to DB
       try {
@@ -145,17 +210,50 @@ If a link doesn't work, try searching by name instead.`);
           fileSizeMb: fileSizeMB.toFixed(1),
           status: "completed",
         });
-      } catch (e) { console.error(e); }
+      } catch (e) {
+        console.error(e);
+      }
 
-      const isAudio = platform === "yandexmusic" || platform === "search" || result.filepath.endsWith(".mp3");
+      const isAudio =
+        platform === "yandexmusic" ||
+        platform === "search" ||
+        result.filepath.endsWith(".mp3");
+
+      const link = input.startsWith("http") ? input : "";
+      const safeHref = escapeHtmlAttr(link);
+      const safeTitle = escapeHtml(result.title);
+
+      // const caption = isAudio
+      // ? `🎵 ${safeTitle}\n📦 ${fileSizeMB.toFixed(1)}MB\n🔗 <a href="${safeHref}">Открыть</a>`
+      // : `🎬 ${safeTitle}\n📦 ${fileSizeMB.toFixed(1)}MB\n🔗 <a href="${safeHref}">Открыть</a>`;
+
+      const caption = `${isAudio ? "🎵" : "🎬"} ${safeTitle}\n📦 ${fileSizeMB.toFixed(1)}MB\n🔗 <a href="${safeHref}">${input.startsWith("http") ? "Открыть" : "From Search"}</a>`;
 
       if (isAudio) {
-        await ctx.replyWithAudio(Input.fromLocalFile(result.filepath), {
-          caption: `🎵 ${result.title}\n📦 ${fileSizeMB.toFixed(1)}MB\n🔗 ${input.startsWith('http') ? input : 'Search'}`,
-        });
+        // await ctx.replyWithAudio(Input.fromLocalFile(result.filepath), {
+        //   caption,
+        //   parse_mode: "HTML",
+        // });
+
+        let tgTitle = (result.title || "Audio").trim();
+        tgTitle = tgTitle.replace(/^\s*[^-–—]{2,50}\s*[-–—]\s*/u, ""); // срежет "Артист - "
+        const safeName = sanitizeFilename(tgTitle);
+
+        await ctx.replyWithAudio(
+          {
+            source: fs.createReadStream(result.filepath),
+            filename: `${safeName}.mp3`,
+          },
+          {
+            title: tgTitle,
+            caption,
+            parse_mode: "HTML",
+          },
+        );
       } else {
         await ctx.replyWithVideo(Input.fromLocalFile(result.filepath), {
-          caption: `🎬 ${result.title}\n📦 ${fileSizeMB.toFixed(1)}MB\n🔗 ${input}`,
+          caption,
+          parse_mode: "HTML",
         });
       }
 
@@ -163,16 +261,28 @@ If a link doesn't work, try searching by name instead.`);
       fs.unlinkSync(result.filepath);
     } catch (error: any) {
       console.error("Error:", error);
-      await ctx.telegram.editMessageText(chatId, statusMsg.message_id, undefined, `❌ Error: ${error.message}`);
+      await ctx.telegram.editMessageText(
+        chatId,
+        statusMsg.message_id,
+        undefined,
+        `❌ Error: ${error.message}`,
+      );
       try {
-        await storage.createDownload({ platform, url: input, status: "failed" });
-      } catch (e) { console.error(e); }
+        await storage.createDownload({
+          platform,
+          url: input,
+          status: "failed",
+        });
+      } catch (e) {
+        console.error(e);
+      }
     } finally {
       isDownloading = false;
     }
   }
 
-  bot.launch()
+  bot
+    .launch()
     .then(() => console.log("✅ Bot started!"))
     .catch((err) => console.error("❌ Bot launch failed:", err));
 
@@ -181,7 +291,8 @@ If a link doesn't work, try searching by name instead.`);
 }
 
 function detectPlatform(url: string): string | null {
-  if (url.includes("music.yandex.ru") || url.includes("music.yandex.com")) return "yandexmusic";
+  if (url.includes("music.yandex.ru") || url.includes("music.yandex.com"))
+    return "yandexmusic";
   if (url.includes("youtube.com") || url.includes("youtu.be")) return "youtube";
   if (url.includes("tiktok.com")) return "tiktok";
   if (url.includes("instagram.com")) return "instagram";
@@ -197,10 +308,12 @@ async function downloadMedia(input: string, platform: string) {
   try {
     let command;
     if (platform === "search") {
-      command = `yt-dlp "ytsearch1:${input}" --extract-audio --audio-format mp3 --audio-quality 320K -o "${filepath}"`;
+      command = `yt-dlp "ytsearch1:${input}" --no-playlist --extract-audio --audio-format mp3 --audio-quality 320K --add-metadata -o "${filepath}"`;
     } else if (platform === "yandexmusic") {
       const cookieFile = path.join(process.cwd(), "cookies.txt");
-      const cookieParam = fs.existsSync(cookieFile) ? `--cookies "${cookieFile}"` : "";
+      const cookieParam = fs.existsSync(cookieFile)
+        ? `--cookies "${cookieFile}"`
+        : "";
       command = `yt-dlp ${cookieParam} --extract-audio --audio-format mp3 --audio-quality 320K -o "${filepath}" "${input}"`;
     } else if (platform === "youtube") {
       command = `yt-dlp -f "best[height<=1080]" -o "${filepath}" "${input}"`;
@@ -211,11 +324,35 @@ async function downloadMedia(input: string, platform: string) {
     console.log("Running:", command);
     await execAsync(command, { timeout: 300000 });
 
-    const { stdout: info } = await execAsync(`yt-dlp --get-title --no-warnings ${platform === "search" ? `"ytsearch1:${input}"` : `"${input}"`}`);
+    const { stdout: info } = await execAsync(
+      `yt-dlp --get-title --no-warnings ${platform === "search" ? `"ytsearch1:${input}"` : `"${input}"`}`,
+    );
 
     return { success: true, filepath, title: info.trim() || "Media" };
   } catch (error: any) {
     if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
-    return { success: false, error: "Download failed. Try search by name instead." };
+    return {
+      success: false,
+      error: "Download failed. Try search by name instead.",
+    };
   }
+}
+
+function sanitizeFilename(name: string, maxLen = 80) {
+  return (name || "audio")
+    .replace(/[\/\\:*?"<>|]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLen);
+}
+
+function escapeHtml(text: string) {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function escapeHtmlAttr(text: string) {
+  return escapeHtml(text).replaceAll('"', "&quot;");
 }
