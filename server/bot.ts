@@ -173,12 +173,20 @@ If a link doesn't work, try searching by name instead.`);
     userCooldown.set(userId, now);
     isDownloading = true;
 
-    const statusMsg = await ctx.reply(
-      platform === "search" ? "🔍 Searching..." : `🔍 Detecting ${platform}...`,
-      {
-        reply_to_message_id: ctx.message.message_id,
-      },
-    );
+    let statusMsg: any;
+    try {
+      statusMsg = await ctx.reply(
+        platform === "search" ? "🔍 Searching..." : `🔍 Detecting ${platform}...`,
+        {
+          reply_to_message_id: ctx.message.message_id,
+        },
+      );
+    } catch {
+      // Fallback: reply without reply_to_message_id if it fails (in groups)
+      statusMsg = await ctx.reply(
+        platform === "search" ? "🔍 Searching..." : `🔍 Detecting ${platform}...`,
+      );
+    }
 
     try {
       await ctx.telegram.editMessageText(
@@ -355,4 +363,11 @@ function escapeHtml(text: string) {
 
 function escapeHtmlAttr(text: string) {
   return escapeHtml(text).replaceAll('"', "&quot;");
+}
+
+function isReplyToBot(ctx: any): boolean {
+  if (!ctx.message?.reply_to_message) return false;
+  const repliedTo = ctx.message.reply_to_message;
+  // Check if the replied message is from the bot
+  return repliedTo.from?.is_bot === true;
 }
