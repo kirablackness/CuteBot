@@ -213,6 +213,7 @@ async function downloadMedia(input, platform, videoId = null) {
 async function processTask(ctx, input, platform, videoId = null) {
   const chatId = ctx.chat?.id || ctx.callbackQuery?.message?.chat?.id;
   let statusMsg;
+  let filepath = null;
 
   statusMsg = await safeReply(ctx, "⏳ Скачиваю...", {
     reply_to_message_id: ctx.message?.message_id
@@ -221,6 +222,12 @@ async function processTask(ctx, input, platform, videoId = null) {
   const updateStatus = async (text) => {
     if (!statusMsg) return;
     await safeEdit(ctx.telegram, chatId, statusMsg.message_id, text).catch(() => {});
+  };
+
+  const cleanup = () => {
+    if (filepath && fs.existsSync(filepath)) {
+      try { fs.unlinkSync(filepath); } catch {}
+    }
   };
 
   try {
@@ -232,42 +239,52 @@ async function processTask(ctx, input, platform, videoId = null) {
 
     const result = await downloadMedia(input, platform, videoId);
     if (!result.success) throw new Error(result.error);
+    filepath = result.filepath;
 
-    const stats = fs.statSync(result.filepath);
+    const stats = fs.statSync(filepath);
     const sizeMB = (stats.size / 1024 / 1024).toFixed(1);
     await updateStatus(`📤 Отправляю ${sizeMB}МБ...`);
 
-    const isAudio = platform === "yandexmusic" || platform === "search" || result.filepath.endsWith(".mp3");
+    const isAudio = platform === "yandexmusic" || platform === "search" || filepath.endsWith(".mp3");
     const caption = `${isAudio ? "🎵" : "🎬"} ${result.title}`;
 
-    console.log(`📤 Отправка: platform=${platform}, isAudio=${isAudio}, file=${result.filepath}`);
-    if (isAudio) {
-      let performer = "";
-      let title = result.title;
-      if (result.title.includes(" - ")) {
-        const parts = result.title.split(" - ");
-        performer = parts[0].trim();
-        title = parts.slice(1).join(" - ").trim();
-      }
-      await ctx.telegram.sendAudio(chatId, { source: fs.createReadStream(result.filepath) }, { 
-        caption,
-        title,
-        performer
-      });
-    } else {
-      await ctx.telegram.sendVideo(chatId, Input.fromLocalFile(result.filepath), { caption });
-    }
+    console.log(`📤 Отправка: platform=${platform}, isAudio=${isAudio}, file=${filepath}`);
+    
+    // Таймаут 2 минуты на отправку
+    const UPLOAD_TIMEOUT = 120000;
+    const uploadPromise = isAudio
+      ? (async () => {
+          let performer = "";
+          let title = result.title;
+          if (result.title.includes(" - ")) {
+            const parts = result.title.split(" - ");
+            performer = parts[0].trim();
+            title = parts.slice(1).join(" - ").trim();
+          }
+          await ctx.telegram.sendAudio(chatId, Input.fromLocalFile(filepath), { 
+            caption,
+            title,
+            performer
+          });
+        })()
+      : ctx.telegram.sendVideo(chatId, Input.fromLocalFile(filepath), { caption });
+
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error("Таймаут отправки (2 мин)")), UPLOAD_TIMEOUT)
+    );
+
+    await Promise.race([uploadPromise, timeoutPromise]);
 
     if (statusMsg) await ctx.telegram.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-    fs.unlinkSync(result.filepath);
   } catch (error) {
-    // Игнорируем ошибки закрытых тем в группах
     if (error.message?.includes("TOPIC_CLOSED")) {
       console.log("Пропуск: тема закрыта в группе");
       return;
     }
     console.error("Ошибка:", error.message);
     await updateStatus(`Ошибка: ${error.message}`).catch(() => {});
+  } finally {
+    cleanup();
   }
 }
 
