@@ -56,15 +56,18 @@ function getUserQueueCount(userId) {
 
 async function searchYouTube(query, count = 5) {
   try {
-    const cmd = `yt-dlp "ytsearch${count}:${query}" --flat-playlist --print "%(id)s|||%(title)s|||%(duration_string)s" --no-warnings`;
+    const encodedQuery = encodeURIComponent(query);
+    const cmd = `yt-dlp "https://music.youtube.com/search?q=${encodedQuery}" --flat-playlist --print "%(id)s|||%(title)s|||%(duration_string)s" --no-warnings`;
     const { stdout } = await execAsync(cmd, { timeout: 30000 });
     
-    const results = stdout.trim().split("\n").filter(Boolean).map((line) => {
-      const [id, title, duration] = line.split("|||");
-      return { id, title: title || "Без названия", duration: duration || "?:??" };
-    });
+    const results = stdout.trim().split("\n").filter(Boolean)
+      .map((line) => {
+        const [id, title, duration] = line.split("|||");
+        return { id, title: title || "Без названия", duration: duration || "?:??" };
+      })
+      .filter(r => r.id && r.id.length === 11 && r.title !== "NA");
     
-    return results.slice(0, 5);
+    return results.slice(0, count);
   } catch (error) {
     console.error("Ошибка поиска:", error.message);
     return [];
@@ -267,7 +270,7 @@ async function handleSearch(ctx, query) {
 
   userCooldown.set(userId, now);
 
-  const statusMsg = await ctx.reply("🔍 Ищу на YouTube...").catch(() => null);
+  const statusMsg = await ctx.reply("🔍 Ищу на YouTube Music...").catch(() => null);
   
   const results = await searchYouTube(query);
   
