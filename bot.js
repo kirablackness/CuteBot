@@ -1,4 +1,4 @@
-const { Telegraf, Input } = require("telegraf");
+const { Telegraf, Input, Markup } = require("telegraf");
 const { exec } = require("child_process");
 const { promisify } = require("util");
 const fs = require("fs");
@@ -10,6 +10,7 @@ const TEMP_DIR = os.tmpdir();
 const COOLDOWN_SECONDS = 30;
 const userCooldown = new Map();
 const downloadQueue = [];
+const searchCache = new Map();
 let isProcessing = false;
 
 const BOT_USERNAME = (process.env.BOT_USERNAME || "lashmedia_pro_bot").replace(/^@/, "").toLowerCase();
@@ -34,7 +35,24 @@ function findFile(basePattern) {
   return null;
 }
 
-async function downloadMedia(input, platform) {
+async function searchYouTube(query, count = 5) {
+  try {
+    const cmd = `yt-dlp "ytsearch${count}:${query}" --flat-playlist --print "%(id)s|||%(title)s|||%(duration_string)s" --no-warnings`;
+    const { stdout } = await execAsync(cmd, { timeout: 30000 });
+    
+    const results = stdout.trim().split("\n").filter(Boolean).map((line, index) => {
+      const [id, title, duration] = line.split("|||");
+      return { id, title: title || "Без названия", duration: duration || "?:??" };
+    });
+    
+    return results.slice(0, 5);
+  } catch (error) {
+    console.error("Ошибка поиска:", error.message);
+    return [];
+  }
+}
+
+async function downloadMedia(input, platform, videoId = null) {
   const timestamp = Date.now();
   const isAudio = platform === "yandexmusic" || platform === "search";
   const basePath = path.join(TEMP_DIR, `${platform}_${timestamp}`);
@@ -42,15 +60,25 @@ async function downloadMedia(input, platform) {
 
   try {
     let cmd;
+    let url = input;
+    
+    if (videoId) {
+      url = `https://www.youtube.com/watch?v=${videoId}`;
+    }
+    
     if (platform === "search") {
-      cmd = `yt-dlp "ytsearch1:${input}" --no-playlist -x --audio-format mp3 --audio-quality 0 -o "${template}"`;
+      if (videoId) {
+        cmd = `yt-dlp "${url}" --no-playlist -x --audio-format mp3 --audio-quality 0 -o "${template}"`;
+      } else {
+        cmd = `yt-dlp "ytsearch1:${input}" --no-playlist -x --audio-format mp3 --audio-quality 0 -o "${template}"`;
+      }
     } else if (platform === "yandexmusic") {
       const cookies = fs.existsSync("cookies.txt") ? '--cookies "cookies.txt"' : "";
-      cmd = `yt-dlp ${cookies} -x --audio-format mp3 --audio-quality 0 -o "${template}" "${input}"`;
+      cmd = `yt-dlp ${cookies} -x --audio-format mp3 --audio-quality 0 -o "${template}" "${url}"`;
     } else if (platform === "youtube") {
-      cmd = `yt-dlp -f "bestvideo[height<=1080]+bestaudio/best" --merge-output-format mp4 -o "${template}" "${input}"`;
+      cmd = `yt-dlp -f "bestvideo[height<=1080]+bestaudio/best" --merge-output-format mp4 -o "${template}" "${url}"`;
     } else {
-      cmd = `yt-dlp -f "best" -o "${template}" "${input}"`;
+      cmd = `yt-dlp -f "best" -o "${template}" "${url}"`;
     }
 
     console.log("Команда:", cmd);
@@ -61,10 +89,10 @@ async function downloadMedia(input, platform) {
 
     let title = "Медиа";
     try {
-      const { stdout } = await execAsync(
-        `yt-dlp --get-title --no-warnings ${platform === "search" ? `"ytsearch1:${input}"` : `"${input}"`}`,
-        { timeout: 30000 }
-      );
+      const titleCmd = videoId 
+        ? `yt-dlp --get-title --no-warnings "https://www.youtube.com/watch?v=${videoId}"`
+        : `yt-dlp --get-title --no-warnings ${platform === "search" ? `"ytsearch1:${input}"` : `"${input}"`}`;
+      const { stdout } = await execAsync(titleCmd, { timeout: 30000 });
       title = stdout.trim() || "Медиа";
     } catch {}
 
@@ -75,16 +103,18 @@ async function downloadMedia(input, platform) {
   }
 }
 
-async function processTask(ctx, input, platform) {
-  const chatId = ctx.chat.id;
+async function processTask(ctx, input, platform, videoId = null) {
+  const chatId = ctx.chat?.id || ctx.callbackQuery?.message?.chat?.id;
   let statusMsg;
 
   try {
-    statusMsg = await ctx.reply(platform === "search" ? "Ищу..." : "Скачиваю...", {
-      reply_to_message_id: ctx.message?.message_id
-    }).catch(() => null);
+    if (ctx.reply) {
+      statusMsg = await ctx.reply(platform === "search" ? "Скачиваю..." : "Скачиваю...", {
+        reply_to_message_id: ctx.message?.message_id
+      }).catch(() => null);
+    }
   } catch {
-    statusMsg = await ctx.reply("Скачиваю...").catch(() => null);
+    statusMsg = null;
   }
 
   const updateStatus = async (text) => {
@@ -95,7 +125,7 @@ async function processTask(ctx, input, platform) {
   };
 
   try {
-    const result = await downloadMedia(input, platform);
+    const result = await downloadMedia(input, platform, videoId);
     if (!result.success) throw new Error(result.error);
 
     const stats = fs.statSync(result.filepath);
@@ -106,9 +136,9 @@ async function processTask(ctx, input, platform) {
     const caption = `${isAudio ? "Аудио" : "Видео"}: ${result.title}\nРазмер: ${sizeMB}МБ`;
 
     if (isAudio) {
-      await ctx.replyWithAudio({ source: fs.createReadStream(result.filepath) }, { caption });
+      await ctx.telegram.sendAudio(chatId, { source: fs.createReadStream(result.filepath) }, { caption });
     } else {
-      await ctx.replyWithVideo(Input.fromLocalFile(result.filepath), { caption });
+      await ctx.telegram.sendVideo(chatId, Input.fromLocalFile(result.filepath), { caption });
     }
 
     if (statusMsg) await ctx.telegram.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
@@ -125,7 +155,7 @@ async function processQueue() {
 
   const task = downloadQueue.shift();
   try {
-    await processTask(task.ctx, task.input, task.platform);
+    await processTask(task.ctx, task.input, task.platform, task.videoId);
   } catch (e) {
     console.error("Ошибка очереди:", e.message);
   }
@@ -134,11 +164,57 @@ async function processQueue() {
   if (downloadQueue.length > 0) setImmediate(processQueue);
 }
 
-function addToQueue(ctx, input, platform) {
+function addToQueue(ctx, input, platform, videoId = null) {
   const pos = downloadQueue.length;
-  downloadQueue.push({ ctx, input, platform });
+  downloadQueue.push({ ctx, input, platform, videoId });
   if (pos === 0) processQueue();
   else ctx.reply(`В очереди. Позиция: ${pos}`).catch(() => {});
+}
+
+async function handleSearch(ctx, query) {
+  const userId = ctx.from.id;
+  const now = Math.floor(Date.now() / 1000);
+  const last = userCooldown.get(userId);
+
+  if (last && now - last < COOLDOWN_SECONDS) {
+    ctx.reply(`Подождите ${COOLDOWN_SECONDS - (now - last)} сек`);
+    return;
+  }
+
+  userCooldown.set(userId, now);
+
+  const statusMsg = await ctx.reply("Ищу на YouTube...").catch(() => null);
+  
+  const results = await searchYouTube(query);
+  
+  if (results.length === 0) {
+    if (statusMsg) {
+      await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, undefined, "Ничего не найдено. Попробуйте другой запрос.");
+    }
+    return;
+  }
+
+  const cacheKey = `${userId}_${Date.now()}`;
+  searchCache.set(cacheKey, results);
+  
+  setTimeout(() => searchCache.delete(cacheKey), 300000);
+
+  const buttons = results.map((item, index) => {
+    const shortTitle = item.title.length > 40 ? item.title.substring(0, 37) + "..." : item.title;
+    return [Markup.button.callback(`${index + 1}. ${shortTitle} [${item.duration}]`, `dl_${cacheKey}_${index}`)];
+  });
+
+  buttons.push([Markup.button.callback("Отмена", `cancel_${cacheKey}`)]);
+
+  if (statusMsg) {
+    await ctx.telegram.editMessageText(
+      ctx.chat.id, 
+      statusMsg.message_id, 
+      undefined, 
+      `Результаты поиска "${query}":\n\nВыберите трек:`,
+      Markup.inlineKeyboard(buttons)
+    );
+  }
 }
 
 function handleDownload(ctx, input, platform) {
@@ -173,11 +249,12 @@ function setupBot() {
 • Instagram
 
 Просто отправьте ссылку или название песни!
+При поиске покажу список - выберите нужный трек.
 
 Команды:
 /start - начало
 /help - помощь
-/search <название> - поиск песни
+/search <название> - поиск с выбором
 /status - статус бота`);
   });
 
@@ -186,7 +263,7 @@ function setupBot() {
 
 1. Отправьте ссылку с YouTube, TikTok, Instagram или Яндекс.Музыки
 
-2. Или просто напишите название песни
+2. Или напишите название песни - покажу список результатов, выберите нужный
 
 В группах: используйте !название или @${BOT_USERNAME} название`);
   });
@@ -194,7 +271,7 @@ function setupBot() {
   bot.command("search", (ctx) => {
     const query = ctx.message.text.split(" ").slice(1).join(" ");
     if (!query) return ctx.reply("Использование: /search название песни");
-    handleDownload(ctx, query, "search");
+    handleSearch(ctx, query);
   });
 
   bot.command("status", async (ctx) => {
@@ -204,6 +281,31 @@ function setupBot() {
     } catch {
       ctx.reply("yt-dlp не установлен");
     }
+  });
+
+  bot.action(/^dl_(.+)_(\d+)$/, async (ctx) => {
+    const cacheKey = ctx.match[1];
+    const index = parseInt(ctx.match[2]);
+    
+    const results = searchCache.get(cacheKey);
+    if (!results || !results[index]) {
+      await ctx.answerCbQuery("Результаты устарели. Попробуйте поиск заново.");
+      return;
+    }
+
+    const selected = results[index];
+    await ctx.answerCbQuery(`Скачиваю: ${selected.title.substring(0, 30)}...`);
+    
+    await ctx.editMessageText(`Скачиваю: ${selected.title}`);
+    
+    addToQueue(ctx, selected.title, "search", selected.id);
+  });
+
+  bot.action(/^cancel_(.+)$/, async (ctx) => {
+    const cacheKey = ctx.match[1];
+    searchCache.delete(cacheKey);
+    await ctx.answerCbQuery("Отменено");
+    await ctx.editMessageText("Поиск отменён.");
   });
 
   bot.on("text", (ctx) => {
@@ -220,16 +322,16 @@ function setupBot() {
       return;
     }
 
-    if (!isGroup) return handleDownload(ctx, text, "search");
+    if (!isGroup) return handleSearch(ctx, text);
 
     if (text.includes(`@${BOT_USERNAME}`)) {
       const query = text.replace(new RegExp(`@${BOT_USERNAME}`, "gi"), "").trim();
-      if (query) return handleDownload(ctx, query, "search");
+      if (query) return handleSearch(ctx, query);
     }
 
     if (text.startsWith("!")) {
       const query = text.slice(1).trim();
-      if (query) return handleDownload(ctx, query, "search");
+      if (query) return handleSearch(ctx, query);
     }
   });
 
