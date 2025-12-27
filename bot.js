@@ -56,7 +56,7 @@ function getUserQueueCount(userId) {
 
 async function searchYouTube(query, count = 5) {
   try {
-    const cmd = `yt-dlp "ytmsearch${count}:${query}" --flat-playlist --print "%(id)s|||%(title)s|||%(duration_string)s" --no-warnings`;
+    const cmd = `yt-dlp "ytsearch${count}:${query}" --flat-playlist --print "%(id)s|||%(title)s|||%(duration_string)s" --no-warnings`;
     const { stdout } = await execAsync(cmd, { timeout: 30000 });
     
     const results = stdout.trim().split("\n").filter(Boolean).map((line) => {
@@ -112,7 +112,7 @@ async function downloadMedia(input, platform, videoId = null) {
       if (videoId) {
         cmd = `yt-dlp "${url}" --no-playlist -x --audio-format mp3 --audio-quality 0 -o "${template}"`;
       } else {
-        cmd = `yt-dlp "ytmsearch1:${input}" --no-playlist -x --audio-format mp3 --audio-quality 0 -o "${template}"`;
+        cmd = `yt-dlp "ytsearch1:${input}" --no-playlist -x --audio-format mp3 --audio-quality 0 -o "${template}"`;
       }
     } else if (platform === "yandexmusic") {
       const cookies = fs.existsSync("cookies.txt") ? '--cookies "cookies.txt"' : "";
@@ -141,7 +141,7 @@ async function downloadMedia(input, platform, videoId = null) {
     try {
       const titleCmd = videoId 
         ? `yt-dlp --get-title --no-warnings "https://www.youtube.com/watch?v=${videoId}"`
-        : `yt-dlp --get-title --no-warnings ${platform === "search" ? `"ytmsearch1:${input}"` : `"${input}"`}`;
+        : `yt-dlp --get-title --no-warnings ${platform === "search" ? `"ytsearch1:${input}"` : `"${input}"`}`;
       const { stdout } = await execAsync(titleCmd, { timeout: 30000 });
       title = stdout.trim() || "Медиа";
     } catch {}
@@ -267,7 +267,7 @@ async function handleSearch(ctx, query) {
 
   userCooldown.set(userId, now);
 
-  const statusMsg = await ctx.reply("🔍 Ищу на YouTube Music...").catch(() => null);
+  const statusMsg = await ctx.reply("🔍 Ищу на YouTube...").catch(() => null);
   
   const results = await searchYouTube(query);
   
