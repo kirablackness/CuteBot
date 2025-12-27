@@ -163,15 +163,32 @@ async function downloadMedia(input, platform, videoId = null) {
     }
 
     let title = "Медиа";
+    let artist = "";
     try {
-      const titleCmd = videoId 
-        ? `yt-dlp --get-title --no-warnings "https://www.youtube.com/watch?v=${videoId}"`
-        : `yt-dlp --get-title --no-warnings ${platform === "search" ? `"ytsearch1:${input}"` : `"${input}"`}`;
-      const { stdout } = await execAsync(titleCmd, { timeout: 30000 });
-      title = stdout.trim() || "Медиа";
+      const metaUrl = videoId 
+        ? `https://www.youtube.com/watch?v=${videoId}`
+        : (platform === "search" ? `ytsearch1:${input}` : input);
+      const { stdout } = await execAsync(
+        `yt-dlp --print "%(artist)s|||%(title)s" --no-warnings "${metaUrl}"`,
+        { timeout: 30000 }
+      );
+      const [a, t] = stdout.trim().split("|||");
+      artist = (a && a !== "NA") ? a : "";
+      title = t || "Медиа";
     } catch {}
 
-    return { success: true, filepath: file, title };
+    const fullTitle = artist ? `${artist} - ${title}` : title;
+    
+    // Переименовать файл
+    const ext = path.extname(file);
+    const safeName = fullTitle.replace(/[<>:"/\\|?*]/g, "").substring(0, 100);
+    const newPath = path.join(TEMP_DIR, `${safeName}${ext}`);
+    try {
+      fs.renameSync(file, newPath);
+      return { success: true, filepath: newPath, title: fullTitle };
+    } catch {
+      return { success: true, filepath: file, title: fullTitle };
+    }
   } catch (error) {
     console.error("Ошибка скачивания:", error.message);
     return { success: false, error: error.message || "Ошибка скачивания" };
