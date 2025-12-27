@@ -243,6 +243,8 @@ async function processTask(ctx, input, platform, videoId = null) {
 
     const isAudio = platform === "yandexmusic" || platform === "search" || result.filepath.endsWith(".mp3");
     const caption = `${isAudio ? "🎵" : "🎬"} ${result.title}`;
+    
+    console.log(`📤 Отправка: platform=${platform}, isAudio=${isAudio}, file=${result.filepath}`);
 
     if (isAudio) {
       let performer = "";
