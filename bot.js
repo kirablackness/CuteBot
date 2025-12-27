@@ -7,7 +7,14 @@ const path = require("path");
 
 const execAsync = promisify(exec);
 const TEMP_DIR = os.tmpdir();
+
+// Настройки
 const COOLDOWN_SECONDS = 30;
+const MAX_QUEUE_SIZE = 10;
+const MAX_USER_QUEUE = 2;
+const MAX_FILE_SIZE_MB = 50;
+const MAX_DURATION_MINUTES = 15;
+
 const userCooldown = new Map();
 const downloadQueue = [];
 const searchCache = new Map();
@@ -35,12 +42,24 @@ function findFile(basePattern) {
   return null;
 }
 
+function parseDuration(durationStr) {
+  if (!durationStr || durationStr === "?:??") return 0;
+  const parts = durationStr.split(":").map(Number);
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return parts[0] || 0;
+}
+
+function getUserQueueCount(userId) {
+  return downloadQueue.filter(task => task.userId === userId).length;
+}
+
 async function searchYouTube(query, count = 5) {
   try {
     const cmd = `yt-dlp "ytsearch${count}:${query}" --flat-playlist --print "%(id)s|||%(title)s|||%(duration_string)s" --no-warnings`;
     const { stdout } = await execAsync(cmd, { timeout: 30000 });
     
-    const results = stdout.trim().split("\n").filter(Boolean).map((line, index) => {
+    const results = stdout.trim().split("\n").filter(Boolean).map((line) => {
       const [id, title, duration] = line.split("|||");
       return { id, title: title || "Без названия", duration: duration || "?:??" };
     });
@@ -49,6 +68,29 @@ async function searchYouTube(query, count = 5) {
   } catch (error) {
     console.error("Ошибка поиска:", error.message);
     return [];
+  }
+}
+
+async function checkDuration(url, platform, videoId = null) {
+  try {
+    let checkUrl = url;
+    if (videoId) checkUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    else if (platform === "search") return { ok: true };
+    
+    const { stdout } = await execAsync(
+      `yt-dlp --get-duration --no-warnings "${checkUrl}"`,
+      { timeout: 15000 }
+    );
+    
+    const durationSec = parseDuration(stdout.trim());
+    const maxSec = MAX_DURATION_MINUTES * 60;
+    
+    if (durationSec > maxSec) {
+      return { ok: false, error: `Видео слишком длинное (${Math.floor(durationSec/60)} мин). Максимум: ${MAX_DURATION_MINUTES} мин` };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: true };
   }
 }
 
@@ -76,7 +118,7 @@ async function downloadMedia(input, platform, videoId = null) {
       const cookies = fs.existsSync("cookies.txt") ? '--cookies "cookies.txt"' : "";
       cmd = `yt-dlp ${cookies} -x --audio-format mp3 --audio-quality 0 -o "${template}" "${url}"`;
     } else if (platform === "youtube") {
-      cmd = `yt-dlp -f "bestvideo[height<=1080]+bestaudio/best" --merge-output-format mp4 -o "${template}" "${url}"`;
+      cmd = `yt-dlp -f "bestvideo[height<=720]+bestaudio/best[height<=720]/best" --merge-output-format mp4 -o "${template}" "${url}"`;
     } else {
       cmd = `yt-dlp -f "best" -o "${template}" "${url}"`;
     }
@@ -86,6 +128,14 @@ async function downloadMedia(input, platform, videoId = null) {
 
     const file = findFile(basePath);
     if (!file) throw new Error("Файл не найден");
+
+    const stats = fs.statSync(file);
+    const sizeMB = stats.size / 1024 / 1024;
+    
+    if (sizeMB > MAX_FILE_SIZE_MB) {
+      fs.unlinkSync(file);
+      throw new Error(`Файл слишком большой (${sizeMB.toFixed(1)}МБ). Лимит Telegram: ${MAX_FILE_SIZE_MB}МБ`);
+    }
 
     let title = "Медиа";
     try {
@@ -109,7 +159,7 @@ async function processTask(ctx, input, platform, videoId = null) {
 
   try {
     if (ctx.reply) {
-      statusMsg = await ctx.reply(platform === "search" ? "Скачиваю..." : "Скачиваю...", {
+      statusMsg = await ctx.reply("Скачиваю...", {
         reply_to_message_id: ctx.message?.message_id
       }).catch(() => null);
     }
@@ -125,6 +175,12 @@ async function processTask(ctx, input, platform, videoId = null) {
   };
 
   try {
+    const durationCheck = await checkDuration(input, platform, videoId);
+    if (!durationCheck.ok) {
+      await updateStatus(durationCheck.error);
+      return;
+    }
+
     const result = await downloadMedia(input, platform, videoId);
     if (!result.success) throw new Error(result.error);
 
@@ -165,10 +221,27 @@ async function processQueue() {
 }
 
 function addToQueue(ctx, input, platform, videoId = null) {
+  const userId = ctx.from?.id || ctx.callbackQuery?.from?.id;
+  
+  if (downloadQueue.length >= MAX_QUEUE_SIZE) {
+    ctx.reply(`Очередь переполнена (${MAX_QUEUE_SIZE}). Попробуйте позже.`).catch(() => {});
+    return false;
+  }
+  
+  if (getUserQueueCount(userId) >= MAX_USER_QUEUE) {
+    ctx.reply(`У вас уже ${MAX_USER_QUEUE} запроса в очереди. Дождитесь их выполнения.`).catch(() => {});
+    return false;
+  }
+
   const pos = downloadQueue.length;
-  downloadQueue.push({ ctx, input, platform, videoId });
-  if (pos === 0) processQueue();
-  else ctx.reply(`В очереди. Позиция: ${pos}`).catch(() => {});
+  downloadQueue.push({ ctx, input, platform, videoId, userId });
+  
+  if (pos === 0) {
+    processQueue();
+  } else {
+    ctx.reply(`В очереди. Позиция: ${pos + 1} из ${downloadQueue.length}`).catch(() => {});
+  }
+  return true;
 }
 
 async function handleSearch(ctx, query) {
@@ -200,8 +273,13 @@ async function handleSearch(ctx, query) {
   setTimeout(() => searchCache.delete(cacheKey), 300000);
 
   const buttons = results.map((item, index) => {
-    const shortTitle = item.title.length > 40 ? item.title.substring(0, 37) + "..." : item.title;
-    return [Markup.button.callback(`${index + 1}. ${shortTitle} [${item.duration}]`, `dl_${cacheKey}_${index}`)];
+    const shortTitle = item.title.length > 35 ? item.title.substring(0, 32) + "..." : item.title;
+    const durationSec = parseDuration(item.duration);
+    const tooLong = durationSec > MAX_DURATION_MINUTES * 60;
+    const label = tooLong 
+      ? `${index + 1}. ${shortTitle} [${item.duration}] (слишком длинное)`
+      : `${index + 1}. ${shortTitle} [${item.duration}]`;
+    return [Markup.button.callback(label.substring(0, 60), tooLong ? `toolong_${index}` : `dl_${cacheKey}_${index}`)];
   });
 
   buttons.push([Markup.button.callback("Отмена", `cancel_${cacheKey}`)]);
@@ -251,6 +329,11 @@ function setupBot() {
 Просто отправьте ссылку или название песни!
 При поиске покажу список - выберите нужный трек.
 
+Ограничения:
+• Максимум ${MAX_DURATION_MINUTES} минут
+• Размер до ${MAX_FILE_SIZE_MB}МБ
+• ${COOLDOWN_SECONDS} сек между запросами
+
 Команды:
 /start - начало
 /help - помощь
@@ -265,7 +348,13 @@ function setupBot() {
 
 2. Или напишите название песни - покажу список результатов, выберите нужный
 
-В группах: используйте !название или @${BOT_USERNAME} название`);
+В группах: используйте !название или @${BOT_USERNAME} название
+
+Ограничения:
+• Видео до ${MAX_DURATION_MINUTES} минут
+• Файлы до ${MAX_FILE_SIZE_MB}МБ
+• Очередь: максимум ${MAX_QUEUE_SIZE} запросов
+• На пользователя: ${MAX_USER_QUEUE} запроса одновременно`);
   });
 
   bot.command("search", (ctx) => {
@@ -277,7 +366,10 @@ function setupBot() {
   bot.command("status", async (ctx) => {
     try {
       const { stdout } = await execAsync("yt-dlp --version");
-      ctx.reply(`Бот работает\nyt-dlp: ${stdout.trim()}\nВ очереди: ${downloadQueue.length}`);
+      ctx.reply(`Бот работает
+yt-dlp: ${stdout.trim()}
+В очереди: ${downloadQueue.length}/${MAX_QUEUE_SIZE}
+Лимиты: ${MAX_DURATION_MINUTES} мин, ${MAX_FILE_SIZE_MB}МБ`);
     } catch {
       ctx.reply("yt-dlp не установлен");
     }
@@ -299,6 +391,10 @@ function setupBot() {
     await ctx.editMessageText(`Скачиваю: ${selected.title}`);
     
     addToQueue(ctx, selected.title, "search", selected.id);
+  });
+
+  bot.action(/^toolong_/, async (ctx) => {
+    await ctx.answerCbQuery(`Видео длиннее ${MAX_DURATION_MINUTES} минут. Выберите другое.`);
   });
 
   bot.action(/^cancel_(.+)$/, async (ctx) => {
