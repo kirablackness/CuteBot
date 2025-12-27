@@ -189,7 +189,7 @@ async function processTask(ctx, input, platform, videoId = null) {
     await updateStatus(`📤 Отправляю ${sizeMB}МБ...`);
 
     const isAudio = platform === "yandexmusic" || platform === "search" || result.filepath.endsWith(".mp3");
-    const caption = `${isAudio ? "🎵" : "🎬"} ${result.title}\n📦 Размер: ${sizeMB}МБ`;
+    const caption = `${isAudio ? "🎵" : "🎬"} ${result.title}`;
 
     if (isAudio) {
       await ctx.telegram.sendAudio(chatId, { source: fs.createReadStream(result.filepath) }, { caption });
