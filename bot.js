@@ -22,6 +22,25 @@ let isProcessing = false;
 
 const BOT_USERNAME = (process.env.BOT_USERNAME || "lashmedia_pro_bot").replace(/^@/, "").toLowerCase();
 
+// Безопасная отправка сообщений (игнорирует закрытые темы)
+async function safeReply(ctx, text, options = {}) {
+  try {
+    return await ctx.reply(text, options);
+  } catch (e) {
+    if (e.message?.includes("TOPIC_CLOSED")) return null;
+    throw e;
+  }
+}
+
+async function safeEdit(telegram, chatId, msgId, text, extra) {
+  try {
+    return await telegram.editMessageText(chatId, msgId, undefined, text, extra);
+  } catch (e) {
+    if (e.message?.includes("TOPIC_CLOSED")) return null;
+    throw e;
+  }
+}
+
 function detectPlatform(url) {
   if (url.includes("music.yandex.")) return "yandexmusic";
   if (url.includes("youtube.com") || url.includes("youtu.be")) return "youtube";
@@ -70,24 +89,24 @@ async function getArtist(videoId) {
 async function searchYouTube(query, count = 5) {
   try {
     const encodedQuery = encodeURIComponent(query);
-    const cmd = `yt-dlp "https://music.youtube.com/search?q=${encodedQuery}" --flat-playlist --print "%(id)s|||%(title)s|||%(duration_string)s" --no-warnings`;
+    // Поиск по YouTube Music с получением артиста сразу
+    const cmd = `yt-dlp "https://music.youtube.com/search?q=${encodedQuery}" --flat-playlist --print "%(id)s|||%(title)s|||%(duration_string)s|||%(artist)s" --no-warnings`;
     const { stdout } = await execAsync(cmd, { timeout: 30000 });
     
-    let results = stdout.trim().split("\n").filter(Boolean)
+    const results = stdout.trim().split("\n").filter(Boolean)
       .map((line) => {
-        const [id, title, duration] = line.split("|||");
-        return { id, title: title || "Без названия", duration: duration || "" };
+        const [id, title, duration, artist] = line.split("|||");
+        const cleanArtist = (artist && artist !== "NA") ? artist : "";
+        const cleanTitle = title || "Без названия";
+        const displayTitle = cleanArtist ? `${cleanArtist} - ${cleanTitle}` : cleanTitle;
+        return { 
+          id, 
+          title: displayTitle,
+          duration: (duration && duration !== "NA") ? duration : ""
+        };
       })
       .filter(r => r.id && r.id.length === 11 && r.title !== "NA")
-      .map(r => ({ ...r, duration: r.duration === "NA" ? "" : r.duration }))
       .slice(0, count);
-    
-    // Получаем исполнителей параллельно
-    const artists = await Promise.all(results.map(r => getArtist(r.id)));
-    results = results.map((r, i) => ({
-      ...r,
-      title: artists[i] ? `${artists[i]} - ${r.title}` : r.title
-    }));
     
     return results;
   } catch (error) {
@@ -199,21 +218,13 @@ async function processTask(ctx, input, platform, videoId = null) {
   const chatId = ctx.chat?.id || ctx.callbackQuery?.message?.chat?.id;
   let statusMsg;
 
-  try {
-    if (ctx.reply) {
-      statusMsg = await ctx.reply("⏳ Скачиваю...", {
-        reply_to_message_id: ctx.message?.message_id
-      }).catch(() => null);
-    }
-  } catch {
-    statusMsg = null;
-  }
+  statusMsg = await safeReply(ctx, "⏳ Скачиваю...", {
+    reply_to_message_id: ctx.message?.message_id
+  }).catch(() => null);
 
   const updateStatus = async (text) => {
     if (!statusMsg) return;
-    try {
-      await ctx.telegram.editMessageText(chatId, statusMsg.message_id, undefined, text);
-    } catch {}
+    await safeEdit(ctx.telegram, chatId, statusMsg.message_id, text).catch(() => {});
   };
 
   try {
@@ -282,12 +293,12 @@ function addToQueue(ctx, input, platform, videoId = null) {
   const userId = ctx.from?.id || ctx.callbackQuery?.from?.id;
   
   if (downloadQueue.length >= MAX_QUEUE_SIZE) {
-    ctx.reply(`Очередь переполнена (${MAX_QUEUE_SIZE}). Попробуйте позже.`).catch(() => {});
+    safeReply(ctx, `📦 Очередь переполнена (${MAX_QUEUE_SIZE}). Попробуйте позже.`).catch(() => {});
     return false;
   }
   
   if (getUserQueueCount(userId) >= MAX_USER_QUEUE) {
-    ctx.reply(`У вас уже ${MAX_USER_QUEUE} запроса в очереди. Дождитесь их выполнения.`).catch(() => {});
+    safeReply(ctx, `⏳ У вас уже ${MAX_USER_QUEUE} запроса в очереди. Дождитесь их выполнения.`).catch(() => {});
     return false;
   }
 
@@ -297,7 +308,7 @@ function addToQueue(ctx, input, platform, videoId = null) {
   if (pos === 0) {
     processQueue();
   } else {
-    ctx.reply(`В очереди. Позиция: ${pos + 1} из ${downloadQueue.length}`).catch(() => {});
+    safeReply(ctx, `📋 В очереди. Позиция: ${pos + 1} из ${downloadQueue.length}`).catch(() => {});
   }
   return true;
 }
@@ -308,19 +319,19 @@ async function handleSearch(ctx, query) {
   const last = userCooldown.get(userId);
 
   if (last && now - last < COOLDOWN_SECONDS) {
-    ctx.reply(`Подождите ${COOLDOWN_SECONDS - (now - last)} сек`);
+    safeReply(ctx, `⏳ Подождите ${COOLDOWN_SECONDS - (now - last)} сек`);
     return;
   }
 
   userCooldown.set(userId, now);
 
-  const statusMsg = await ctx.reply("🔍 Ищу на YouTube Music...").catch(() => null);
+  const statusMsg = await safeReply(ctx, "🔍 Ищу на YouTube Music...").catch(() => null);
   
   const results = await searchYouTube(query);
   
   if (results.length === 0) {
     if (statusMsg) {
-      await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, undefined, "Ничего не найдено. Попробуйте другой запрос.");
+      await safeEdit(ctx.telegram, ctx.chat.id, statusMsg.message_id, "❌ Ничего не найдено. Попробуйте другой запрос.");
     }
     return;
   }
@@ -344,11 +355,11 @@ async function handleSearch(ctx, query) {
   buttons.push([Markup.button.callback("Отмена", `cancel_${cacheKey}`)]);
 
   if (statusMsg) {
-    await ctx.telegram.editMessageText(
+    await safeEdit(
+      ctx.telegram,
       ctx.chat.id, 
       statusMsg.message_id, 
-      undefined, 
-      `Результаты поиска "${query}":\n\nВыберите трек:`,
+      `🎵 Результаты поиска "${query}":\n\nВыберите трек:`,
       Markup.inlineKeyboard(buttons)
     );
   }
@@ -360,7 +371,7 @@ function handleDownload(ctx, input, platform) {
   const last = userCooldown.get(userId);
 
   if (last && now - last < COOLDOWN_SECONDS) {
-    ctx.reply(`Подождите ${COOLDOWN_SECONDS - (now - last)} сек`);
+    safeReply(ctx, `⏳ Подождите ${COOLDOWN_SECONDS - (now - last)} сек`);
     return;
   }
 
@@ -377,7 +388,7 @@ function setupBot() {
   const bot = new Telegraf(process.env.BOT_TOKEN);
 
   bot.command("start", (ctx) => {
-    ctx.reply(`🎬 Media Download Bot
+    safeReply(ctx, `🎬 Media Download Bot
 
 📦 Поддерживает:
 🎵 Яндекс.Музыка (треки, альбомы)
@@ -401,7 +412,7 @@ function setupBot() {
   });
 
   bot.command("help", (ctx) => {
-    ctx.reply(`📖 Как пользоваться:
+    safeReply(ctx, `📖 Как пользоваться:
 
 1️⃣ Отправьте ссылку с YouTube, TikTok, Instagram или Яндекс.Музыки
 
@@ -418,19 +429,19 @@ function setupBot() {
 
   bot.command("search", (ctx) => {
     const query = ctx.message.text.split(" ").slice(1).join(" ");
-    if (!query) return ctx.reply("Использование: /search название песни");
+    if (!query) return safeReply(ctx, "ℹ️ Использование: /search название песни");
     handleSearch(ctx, query);
   });
 
   bot.command("status", async (ctx) => {
     try {
       const { stdout } = await execAsync("yt-dlp --version");
-      ctx.reply(`✅ Бот работает
+      safeReply(ctx, `✅ Бот работает
 🔧 yt-dlp: ${stdout.trim()}
 📊 В очереди: ${downloadQueue.length}/${MAX_QUEUE_SIZE}
 ⚙️ Лимиты: ${MAX_DURATION_MINUTES} мин, ${MAX_FILE_SIZE_MB}МБ`);
     } catch {
-      ctx.reply("❌ yt-dlp не установлен");
+      safeReply(ctx, "❌ yt-dlp не установлен");
     }
   });
 
@@ -473,7 +484,7 @@ function setupBot() {
     if (urlMatch) {
       const platform = detectPlatform(urlMatch[0]);
       if (platform) return handleDownload(ctx, urlMatch[0], platform);
-      if (!isGroup) ctx.reply("Платформа не поддерживается");
+      if (!isGroup) safeReply(ctx, "❌ Платформа не поддерживается");
       return;
     }
 
