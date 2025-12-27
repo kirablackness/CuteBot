@@ -253,8 +253,13 @@ async function processTask(ctx, input, platform, videoId = null) {
     if (statusMsg) await ctx.telegram.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
     fs.unlinkSync(result.filepath);
   } catch (error) {
+    // Игнорируем ошибки закрытых тем в группах
+    if (error.message?.includes("TOPIC_CLOSED")) {
+      console.log("Пропуск: тема закрыта в группе");
+      return;
+    }
     console.error("Ошибка:", error.message);
-    await updateStatus(`Ошибка: ${error.message}`);
+    await updateStatus(`Ошибка: ${error.message}`).catch(() => {});
   }
 }
 
