@@ -130,7 +130,7 @@ async function checkDuration(url, platform, videoId = null) {
     const maxSec = MAX_DURATION_MINUTES * 60;
     
     if (durationSec > maxSec) {
-      return { ok: false, error: `Видео слишком длинное (${Math.floor(durationSec/60)} мин). Максимум: ${MAX_DURATION_MINUTES} мин` };
+      return { ok: false, error: `⏱️ Слишком длинное (${Math.floor(durationSec/60)} мин). Максимум: ${MAX_DURATION_MINUTES} мин` };
     }
     return { ok: true };
   } catch {
