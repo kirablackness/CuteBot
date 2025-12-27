@@ -159,7 +159,7 @@ async function processTask(ctx, input, platform, videoId = null) {
 
   try {
     if (ctx.reply) {
-      statusMsg = await ctx.reply("Скачиваю...", {
+      statusMsg = await ctx.reply("⏳ Скачиваю...", {
         reply_to_message_id: ctx.message?.message_id
       }).catch(() => null);
     }
@@ -186,10 +186,10 @@ async function processTask(ctx, input, platform, videoId = null) {
 
     const stats = fs.statSync(result.filepath);
     const sizeMB = (stats.size / 1024 / 1024).toFixed(1);
-    await updateStatus(`Отправляю ${sizeMB}МБ...`);
+    await updateStatus(`📤 Отправляю ${sizeMB}МБ...`);
 
     const isAudio = platform === "yandexmusic" || platform === "search" || result.filepath.endsWith(".mp3");
-    const caption = `${isAudio ? "Аудио" : "Видео"}: ${result.title}\nРазмер: ${sizeMB}МБ`;
+    const caption = `${isAudio ? "🎵" : "🎬"} ${result.title}\n📦 Размер: ${sizeMB}МБ`;
 
     if (isAudio) {
       await ctx.telegram.sendAudio(chatId, { source: fs.createReadStream(result.filepath) }, { caption });
@@ -256,7 +256,7 @@ async function handleSearch(ctx, query) {
 
   userCooldown.set(userId, now);
 
-  const statusMsg = await ctx.reply("Ищу на YouTube...").catch(() => null);
+  const statusMsg = await ctx.reply("🔍 Ищу на YouTube...").catch(() => null);
   
   const results = await searchYouTube(query);
   
@@ -318,23 +318,23 @@ function setupBot() {
   const bot = new Telegraf(process.env.BOT_TOKEN);
 
   bot.command("start", (ctx) => {
-    ctx.reply(`Бот для скачивания медиа
+    ctx.reply(`🎬 Media Download Bot
 
-Поддерживает:
-• Яндекс.Музыка
-• YouTube
-• TikTok  
-• Instagram
+📦 Поддерживает:
+🎵 Яндекс.Музыка (треки, альбомы)
+🎬 YouTube (видео, shorts)
+📱 TikTok (все видео)
+📸 Instagram (reels, посты)
 
 Просто отправьте ссылку или название песни!
 При поиске покажу список - выберите нужный трек.
 
-Ограничения:
+⚠️ Ограничения:
 • Максимум ${MAX_DURATION_MINUTES} минут
 • Размер до ${MAX_FILE_SIZE_MB}МБ
 • ${COOLDOWN_SECONDS} сек между запросами
 
-Команды:
+📋 Команды:
 /start - начало
 /help - помощь
 /search <название> - поиск с выбором
@@ -342,15 +342,15 @@ function setupBot() {
   });
 
   bot.command("help", (ctx) => {
-    ctx.reply(`Как пользоваться:
+    ctx.reply(`📖 Как пользоваться:
 
-1. Отправьте ссылку с YouTube, TikTok, Instagram или Яндекс.Музыки
+1️⃣ Отправьте ссылку с YouTube, TikTok, Instagram или Яндекс.Музыки
 
-2. Или напишите название песни - покажу список результатов, выберите нужный
+2️⃣ Или напишите название песни - покажу список результатов, выберите нужный
 
-В группах: используйте !название или @${BOT_USERNAME} название
+👥 В группах: используйте !название или @${BOT_USERNAME} название
 
-Ограничения:
+⚠️ Ограничения:
 • Видео до ${MAX_DURATION_MINUTES} минут
 • Файлы до ${MAX_FILE_SIZE_MB}МБ
 • Очередь: максимум ${MAX_QUEUE_SIZE} запросов
@@ -366,12 +366,12 @@ function setupBot() {
   bot.command("status", async (ctx) => {
     try {
       const { stdout } = await execAsync("yt-dlp --version");
-      ctx.reply(`Бот работает
-yt-dlp: ${stdout.trim()}
-В очереди: ${downloadQueue.length}/${MAX_QUEUE_SIZE}
-Лимиты: ${MAX_DURATION_MINUTES} мин, ${MAX_FILE_SIZE_MB}МБ`);
+      ctx.reply(`✅ Бот работает
+🔧 yt-dlp: ${stdout.trim()}
+📊 В очереди: ${downloadQueue.length}/${MAX_QUEUE_SIZE}
+⚙️ Лимиты: ${MAX_DURATION_MINUTES} мин, ${MAX_FILE_SIZE_MB}МБ`);
     } catch {
-      ctx.reply("yt-dlp не установлен");
+      ctx.reply("❌ yt-dlp не установлен");
     }
   });
 
