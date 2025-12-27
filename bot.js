@@ -118,7 +118,7 @@ async function searchYouTube(query, count = 5) {
 async function checkDuration(url, platform, videoId = null) {
   try {
     let checkUrl = url;
-    if (videoId) checkUrl = `https://music.youtube.com/watch?v=${videoId}`;
+    if (videoId) checkUrl = `https://www.youtube.com/watch?v=${videoId}`;
     else if (platform === "search") return { ok: true };
     
     const { stdout } = await execAsync(
@@ -130,7 +130,7 @@ async function checkDuration(url, platform, videoId = null) {
     const maxSec = MAX_DURATION_MINUTES * 60;
     
     if (durationSec > maxSec) {
-      return { ok: false, error: `⏱️ Слишком длинное (${Math.floor(durationSec/60)} мин). Максимум: ${MAX_DURATION_MINUTES} мин` };
+      return { ok: false, error: `Видео слишком длинное (${Math.floor(durationSec/60)} мин). Максимум: ${MAX_DURATION_MINUTES} мин` };
     }
     return { ok: true };
   } catch {
@@ -148,16 +148,16 @@ async function downloadMedia(input, platform, videoId = null) {
     let cmd;
     let url = input;
     
+    if (videoId) {
+      url = `https://www.youtube.com/watch?v=${videoId}`;
+    }
+    
     if (platform === "search") {
       if (videoId) {
-        // Используем YouTube Music URL для аудио
-        url = `https://music.youtube.com/watch?v=${videoId}`;
         cmd = `yt-dlp "${url}" --no-playlist -x --audio-format mp3 --audio-quality 0 -o "${template}"`;
       } else {
         cmd = `yt-dlp "ytsearch1:${input}" --no-playlist -x --audio-format mp3 --audio-quality 0 -o "${template}"`;
       }
-    } else if (videoId) {
-      url = `https://www.youtube.com/watch?v=${videoId}`;
     } else if (platform === "yandexmusic") {
       const cookies = fs.existsSync("cookies.txt") ? '--cookies "cookies.txt"' : "";
       cmd = `yt-dlp ${cookies} -x --audio-format mp3 --audio-quality 0 -o "${template}" "${url}"`;
@@ -185,7 +185,7 @@ async function downloadMedia(input, platform, videoId = null) {
     let artist = "";
     try {
       const metaUrl = videoId 
-        ? `https://music.youtube.com/watch?v=${videoId}`
+        ? `https://www.youtube.com/watch?v=${videoId}`
         : (platform === "search" ? `ytsearch1:${input}` : input);
       const { stdout } = await execAsync(
         `yt-dlp --print "%(artist)s|||%(title)s" --no-warnings "${metaUrl}"`,
@@ -243,9 +243,8 @@ async function processTask(ctx, input, platform, videoId = null) {
 
     const isAudio = platform === "yandexmusic" || platform === "search" || result.filepath.endsWith(".mp3");
     const caption = `${isAudio ? "🎵" : "🎬"} ${result.title}`;
-    
-    console.log(`📤 Отправка: platform=${platform}, isAudio=${isAudio}, file=${result.filepath}`);
 
+    console.log(`📤 Отправка: platform=${platform}, isAudio=${isAudio}, file=${result.filepath}`);
     if (isAudio) {
       let performer = "";
       let title = result.title;
