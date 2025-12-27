@@ -1,47 +1,47 @@
-# Telegram Media Download Bot
+# Telegram бот для скачивания медиа
 
-Telegram bot for downloading media from YouTube, TikTok, Instagram, and Yandex.Music.
+Скачивает видео и музыку с YouTube, TikTok, Instagram и Яндекс.Музыки.
 
-## Features
+## Файлы
 
-- Download videos from YouTube, TikTok, Instagram
-- Download audio from Yandex.Music
-- Search songs by name (YouTube search)
-- Queue system for multiple requests
-- Works in private chats and groups
+```
+bot.js       - код бота
+package.json - зависимости
+Dockerfile   - для Docker-деплоя
+```
 
-## Environment Variables
+## Переменные окружения
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `BOT_TOKEN` | Yes | Your Telegram bot token from @BotFather |
-| `BOT_USERNAME` | No | Bot username (default: lashmedia_pro_bot) |
+| Переменная | Обязательная | Описание |
+|------------|--------------|----------|
+| BOT_TOKEN | Да | Токен бота от @BotFather |
+| BOT_USERNAME | Нет | Имя бота (по умолчанию: lashmedia_pro_bot) |
 
-## Deploy with Docker
+## Деплой с Docker
 
 ```bash
 docker build -t media-bot .
-docker run -d -e BOT_TOKEN=your_token_here media-bot
+docker run -d -e BOT_TOKEN=ваш_токен media-bot
 ```
 
-## Deploy without Docker
+## Деплой без Docker
 
-Requires: Node.js 18+, yt-dlp, ffmpeg
+Требуется: Node.js 18+, yt-dlp, ffmpeg
 
 ```bash
 npm install
-BOT_TOKEN=your_token_here node bot.js
+BOT_TOKEN=ваш_токен node bot.js
 ```
 
-## Commands
+## Команды бота
 
-- `/start` - Start the bot
-- `/help` - Show help
-- `/search <name>` - Search song by name
-- `/status` - Check bot status
+- `/start` - Начало работы
+- `/help` - Помощь
+- `/search <название>` - Поиск песни
+- `/status` - Статус бота
 
-## Usage
+## Использование
 
-- Send a link from YouTube, TikTok, Instagram, or Yandex.Music
-- Or just type a song name to search on YouTube
-- In groups: use `!songname` or `@botusername songname`
+- Отправьте ссылку с YouTube, TikTok, Instagram или Яндекс.Музыки
+- Или просто напишите название песни
+- В группах: `!название` или `@botusername название`
