@@ -1,0 +1,50 @@
+[91mnpm warn config only Use `--omit=dev` to omit dev dependencies from the install.
+[0m[91mnpm error code EUSAGE
+npm error
+npm error The `npm ci` command can only install with an existing package-lock.json or
+npm error npm-shrinkwrap.json with lockfileVersion >= 1. Run an install with npm@5 or
+npm error later to generate a package-lock.json file, then try again.
+npm error
+npm error Clean install a project
+npm error
+npm error Usage:
+npm error npm ci
+npm error
+npm error Options:
+npm error [--install-strategy <hoisted|nested|shallow|linked>] [--legacy-bundling]
+npm error [--global-style] [--omit <dev|optional|peer> [--omit <dev|optional|peer> ...]]
+npm error [--include <prod|dev|optional|peer> [--include <prod|dev|optional|peer> ...]]
+npm error [--strict-peer-deps] [--foreground-scripts] [--ignore-scripts] [--no-audit]
+npm error [--no-bin-links] [--no-fund] [--dry-run]
+npm error [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
+npm error [-ws|--workspaces] [--include-workspace-root] [--install-links]
+npm error
+npm error aliases: clean-install, ic, install-clean, isntall-clean
+npm error
+npm error Run "npm help ci" for more info
+[0m[91mnpm error A complete log of this run can be found in: /root/.npm/_logs/2025-12-26T17_09_07_197Z-debug-0.log
+[0m[91mnpm warn config only Use `--omit=dev` to omit dev dependencies from the install.
+[0m
+added 17 packages, and audited 18 packages in 3s
+
+found 0 vulnerabilities
+ ---> Removed intermediate container f658f9fa65e4
+ ---> b5b8abf99093
+Step 9/12 : RUN npm cache clean --force || true
+ ---> Running in bccfd74cf5ab
+[91mnpm warn using --force Recommended protections disabled.
+[0m ---> Removed intermediate container bccfd74cf5ab
+ ---> 25b97ee3dcfb
+Step 10/12 : COPY . .
+ ---> 2be53d09ecb9
+Step 11/12 : EXPOSE 3000
+ ---> Running in cfa4289f7122
+ ---> Removed intermediate container cfa4289f7122
+ ---> 302c87a9fc94
+Step 12/12 : CMD ["node", "bot.js"]
+ ---> Running in 40b851bf06ad
+ ---> Removed intermediate container 40b851bf06ad
+ ---> 4a34e4952a56
+Successfully built 4a34e4952a56
+Successfully tagged bothost-bot_1766768940_5810_fzkirablack:latest
+==> Build completed: bothost-bot_1766768940_5810_fzkirablack

@@ -174,41 +174,84 @@ function detectPlatform(url) {
   return null;
 }
 
+function findDownloadedFile(basePattern) {
+  const dir = path.dirname(basePattern);
+  const baseName = path.basename(basePattern).replace(/\.[^.]+$/, "");
+  
+  try {
+    const files = fs.readdirSync(dir);
+    for (const file of files) {
+      if (file.startsWith(baseName)) {
+        return path.join(dir, file);
+      }
+    }
+  } catch (e) {
+    console.error("Error finding file:", e);
+  }
+  return null;
+}
+
 async function downloadMedia(input, platform) {
   const timestamp = Date.now();
   const isAudio = platform === "yandexmusic" || platform === "search";
   const ext = isAudio ? "mp3" : "mp4";
-  const filepath = path.join(TEMP_DIR, `${platform}_${timestamp}.${ext}`);
+  const baseFilepath = path.join(TEMP_DIR, `${platform}_${timestamp}`);
+  const outputTemplate = `${baseFilepath}.%(ext)s`;
 
   try {
     let command;
     if (platform === "search") {
-      command = `yt-dlp "ytsearch1:${input}" --no-playlist --extract-audio --audio-format mp3 --audio-quality 320K --add-metadata -o "${filepath}"`;
+      command = `yt-dlp "ytsearch1:${input}" --no-playlist -x --audio-format mp3 --audio-quality 0 -o "${outputTemplate}"`;
     } else if (platform === "yandexmusic") {
       const cookieFile = path.join(process.cwd(), "cookies.txt");
       const cookieParam = fs.existsSync(cookieFile)
         ? `--cookies "${cookieFile}"`
         : "";
-      command = `yt-dlp ${cookieParam} --extract-audio --audio-format mp3 --audio-quality 320K -o "${filepath}" "${input}"`;
+      command = `yt-dlp ${cookieParam} -x --audio-format mp3 --audio-quality 0 -o "${outputTemplate}" "${input}"`;
     } else if (platform === "youtube") {
-      command = `yt-dlp -f "best[height<=1080]" -o "${filepath}" "${input}"`;
+      command = `yt-dlp -f "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best" --merge-output-format mp4 -o "${outputTemplate}" "${input}"`;
     } else {
-      command = `yt-dlp -f "best" -o "${filepath}" "${input}"`;
+      command = `yt-dlp -f "best" -o "${outputTemplate}" "${input}"`;
     }
 
     console.log("Running:", command);
-    await execAsync(command, { timeout: 300000 });
+    const { stdout, stderr } = await execAsync(command, { timeout: 300000 });
+    console.log("yt-dlp stdout:", stdout);
+    if (stderr) console.log("yt-dlp stderr:", stderr);
 
-    const { stdout: info } = await execAsync(
-      `yt-dlp --get-title --no-warnings ${platform === "search" ? `"ytsearch1:${input}"` : `"${input}"`}`,
-    );
+    // Find the actual downloaded file
+    const actualFile = findDownloadedFile(baseFilepath);
+    if (!actualFile || !fs.existsSync(actualFile)) {
+      console.error("File not found. Looking for:", baseFilepath);
+      console.error("Temp dir contents:", fs.readdirSync(TEMP_DIR).filter(f => f.includes(String(timestamp))));
+      throw new Error("Downloaded file not found");
+    }
+    
+    console.log("Found file:", actualFile);
 
-    return { success: true, filepath, title: info.trim() || "Media" };
+    // Get title
+    let title = "Media";
+    try {
+      const { stdout: info } = await execAsync(
+        `yt-dlp --get-title --no-warnings ${platform === "search" ? `"ytsearch1:${input}"` : `"${input}"`}`,
+        { timeout: 30000 }
+      );
+      title = info.trim() || "Media";
+    } catch (e) {
+      console.error("Failed to get title:", e);
+    }
+
+    return { success: true, filepath: actualFile, title };
   } catch (error) {
-    if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
+    console.error("Download error details:", error);
+    // Cleanup any partial files
+    const files = fs.readdirSync(TEMP_DIR).filter(f => f.includes(String(timestamp)));
+    files.forEach(f => {
+      try { fs.unlinkSync(path.join(TEMP_DIR, f)); } catch {}
+    });
     return {
       success: false,
-      error: "Download failed. Try search by name instead.",
+      error: error.message || "Download failed. Try search by name instead.",
     };
   }
 }
