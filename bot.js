@@ -65,7 +65,8 @@ async function searchYouTube(query, count = 5) {
         const [id, title, duration] = line.split("|||");
         return { id, title: title || "Без названия", duration: duration || "?:??" };
       })
-      .filter(r => r.id && r.id.length === 11 && r.title !== "NA");
+      .filter(r => r.id && r.id.length === 11 && r.title !== "NA")
+      .map(r => ({ ...r, duration: r.duration === "NA" ? "" : r.duration }));
     
     return results.slice(0, count);
   } catch (error) {
@@ -287,12 +288,13 @@ async function handleSearch(ctx, query) {
   setTimeout(() => searchCache.delete(cacheKey), 300000);
 
   const buttons = results.map((item, index) => {
-    const shortTitle = item.title.length > 35 ? item.title.substring(0, 32) + "..." : item.title;
+    const shortTitle = item.title.length > 40 ? item.title.substring(0, 37) + "..." : item.title;
     const durationSec = parseDuration(item.duration);
     const tooLong = durationSec > MAX_DURATION_MINUTES * 60;
+    const durationText = item.duration ? ` [${item.duration}]` : "";
     const label = tooLong 
-      ? `${index + 1}. ${shortTitle} [${item.duration}] (слишком длинное)`
-      : `${index + 1}. ${shortTitle} [${item.duration}]`;
+      ? `${index + 1}. ${shortTitle}${durationText} (долгое)`
+      : `${index + 1}. ${shortTitle}${durationText}`;
     return [Markup.button.callback(label.substring(0, 60), tooLong ? `toolong_${index}` : `dl_${cacheKey}_${index}`)];
   });
 
