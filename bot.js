@@ -54,21 +54,42 @@ function getUserQueueCount(userId) {
   return downloadQueue.filter(task => task.userId === userId).length;
 }
 
+async function getArtist(videoId) {
+  try {
+    const { stdout } = await execAsync(
+      `yt-dlp "https://www.youtube.com/watch?v=${videoId}" --print "%(artist)s" --no-warnings`,
+      { timeout: 10000 }
+    );
+    const artist = stdout.trim();
+    return artist && artist !== "NA" ? artist : "";
+  } catch {
+    return "";
+  }
+}
+
 async function searchYouTube(query, count = 5) {
   try {
     const encodedQuery = encodeURIComponent(query);
     const cmd = `yt-dlp "https://music.youtube.com/search?q=${encodedQuery}" --flat-playlist --print "%(id)s|||%(title)s|||%(duration_string)s" --no-warnings`;
     const { stdout } = await execAsync(cmd, { timeout: 30000 });
     
-    const results = stdout.trim().split("\n").filter(Boolean)
+    let results = stdout.trim().split("\n").filter(Boolean)
       .map((line) => {
         const [id, title, duration] = line.split("|||");
-        return { id, title: title || "Без названия", duration: duration || "?:??" };
+        return { id, title: title || "Без названия", duration: duration || "" };
       })
       .filter(r => r.id && r.id.length === 11 && r.title !== "NA")
-      .map(r => ({ ...r, duration: r.duration === "NA" ? "" : r.duration }));
+      .map(r => ({ ...r, duration: r.duration === "NA" ? "" : r.duration }))
+      .slice(0, count);
     
-    return results.slice(0, count);
+    // Получаем исполнителей параллельно
+    const artists = await Promise.all(results.map(r => getArtist(r.id)));
+    results = results.map((r, i) => ({
+      ...r,
+      title: artists[i] ? `${artists[i]} - ${r.title}` : r.title
+    }));
+    
+    return results;
   } catch (error) {
     console.error("Ошибка поиска:", error.message);
     return [];
