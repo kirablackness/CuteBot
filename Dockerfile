@@ -1,7 +1,7 @@
 FROM node:20-alpine
 
-# Install dependencies and yt-dlp
-RUN apk add --no-cache ffmpeg python3 py3-pip curl \
+# Install dependencies, deno (for yt-dlp JS), and yt-dlp
+RUN apk add --no-cache ffmpeg python3 py3-pip curl deno \
     && pip3 install --break-system-packages yt-dlp \
     && yt-dlp --version
 
