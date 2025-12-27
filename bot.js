@@ -192,7 +192,18 @@ async function processTask(ctx, input, platform, videoId = null) {
     const caption = `${isAudio ? "🎵" : "🎬"} ${result.title}`;
 
     if (isAudio) {
-      await ctx.telegram.sendAudio(chatId, { source: fs.createReadStream(result.filepath) }, { caption });
+      let performer = "";
+      let title = result.title;
+      if (result.title.includes(" - ")) {
+        const parts = result.title.split(" - ");
+        performer = parts[0].trim();
+        title = parts.slice(1).join(" - ").trim();
+      }
+      await ctx.telegram.sendAudio(chatId, { source: fs.createReadStream(result.filepath) }, { 
+        caption,
+        title,
+        performer
+      });
     } else {
       await ctx.telegram.sendVideo(chatId, Input.fromLocalFile(result.filepath), { caption });
     }
